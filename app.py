@@ -115,6 +115,12 @@ def parse_cell_value(value: str | None) -> str | int | float:
         return text
 
 
+def write_excel_cell(sheet, row: int, column: int, value: str | int | float) -> None:
+    cell = sheet.cell(row=row, column=column, value=value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        cell.number_format = "#,##0"
+
+
 def is_inside_bbox(word: dict, bbox: tuple[float, float, float, float]) -> bool:
     x0, top, x1, bottom = bbox
     word_x0 = float(word.get("x0", 0.0))
@@ -171,7 +177,7 @@ def convert_pdf_to_xlsx(uploaded_pdf: bytes) -> bytes:
                 extracted_rows = table.extract() or []
                 for row_values in extracted_rows:
                     for column_index, cell_value in enumerate(row_values, start=1):
-                        sheet.cell(row=current_row, column=column_index, value=parse_cell_value(cell_value))
+                        write_excel_cell(sheet, current_row, column_index, parse_cell_value(cell_value))
                     current_row += 1
                 current_row += 1
 
@@ -184,7 +190,7 @@ def convert_pdf_to_xlsx(uploaded_pdf: bytes) -> bytes:
 
             for line_words in group_words_by_line(non_table_words):
                 for column_index, word in enumerate(line_words, start=1):
-                    sheet.cell(row=current_row, column=column_index, value=parse_cell_value(word.get("text")))
+                    write_excel_cell(sheet, current_row, column_index, parse_cell_value(word.get("text")))
                 current_row += 1
 
             if current_row == 1:

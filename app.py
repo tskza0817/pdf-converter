@@ -13,6 +13,7 @@ from adobe.pdfservices.operation.io.stream_asset import StreamAsset
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
 from adobe.pdfservices.operation.pdfjobs.jobs.export_pdf_job import ExportPDFJob
+from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_ocr_locale import ExportOCRLocale
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_params import ExportPDFParams
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_target_format import ExportPDFTargetFormat
 from adobe.pdfservices.operation.pdfjobs.result.export_pdf_result import ExportPDFResult
@@ -211,7 +212,11 @@ def export_pdf_with_adobe(uploaded_pdf: bytes, output_label: str, client_id: str
     pdf_services = create_pdf_services(client_id, client_secret)
     input_asset = pdf_services.upload(input_stream=uploaded_pdf, mime_type=PDFServicesMediaType.PDF)
 
-    export_pdf_params = ExportPDFParams(target_format=OUTPUT_FORMATS[output_label]["target_format"])
+    export_params_kwargs = {"target_format": OUTPUT_FORMATS[output_label]["target_format"]}
+    if output_label == "Word (.docx)":
+        export_params_kwargs["ocr_lang"] = ExportOCRLocale.EN_US
+
+    export_pdf_params = ExportPDFParams(**export_params_kwargs)
     export_pdf_job = ExportPDFJob(input_asset=input_asset, export_pdf_params=export_pdf_params)
 
     location = pdf_services.submit(export_pdf_job)

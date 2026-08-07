@@ -4,15 +4,16 @@ import io
 import os
 import tempfile
 from contextlib import suppress
+from collections import Counter
 from pathlib import Path
+from statistics import median
 
 import pandas as pd
 import pdfplumber
 import streamlit as st
 from pdf2docx import Converter
-from pdf2image import convert_from_path
 from pptx import Presentation
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 
 OUTPUT_FORMATS = {
@@ -89,6 +90,80 @@ def normalize_table(table: list[list[str | None]]) -> pd.DataFrame:
     return pd.DataFrame(body, columns=[str(value).strip() if value is not None else f"column_{index + 1}" for index, value in enumerate(header)])
 
 
+def group_pdf_chars_into_lines(chars: list[dict], tolerance: float = 2.5) -> list[list[dict]]:
+    if not chars:
+        return []
+
+    ordered_chars = sorted(chars, key=lambda char: (float(char.get("top", 0.0)), float(char.get("x0", 0.0))))
+    grouped_lines: list[list[dict]] = []
+    current_line: list[dict] = []
+    current_top: float | None = None
+
+    for char in ordered_chars:
+        char_top = float(char.get("top", 0.0))
+        if not current_line:
+            current_line = [char]
+            current_top = char_top
+            continue
+
+        if current_top is not None and abs(char_top - current_top) <= tolerance:
+            current_line.append(char)
+            current_top = (current_top + char_top) / 2
+            continue
+
+        grouped_lines.append(current_line)
+        current_line = [char]
+        current_top = char_top
+
+    if current_line:
+        grouped_lines.append(current_line)
+
+    return grouped_lines
+
+
+def create_textbox_for_line(slide, line_chars: list[dict], page_width: float, page_height: float, slide_width_in: float, slide_height_in: float) -> None:
+    if not line_chars:
+        return
+
+    ordered_chars = sorted(line_chars, key=lambda char: float(char.get("x0", 0.0)))
+    text = "".join(str(char.get("text", "")) for char in ordered_chars).rstrip()
+    if not text.strip():
+        return
+
+    left_pt = min(float(char.get("x0", 0.0)) for char in ordered_chars)
+    top_pt = min(float(char.get("top", 0.0)) for char in ordered_chars)
+    right_pt = max(float(char.get("x1", 0.0)) for char in ordered_chars)
+    bottom_pt = max(float(char.get("bottom", 0.0)) for char in ordered_chars)
+    font_sizes = [float(char.get("size", 0.0)) for char in ordered_chars if char.get("size")]
+    font_size_pt = max(median(font_sizes), 1.0) if font_sizes else max(bottom_pt - top_pt, 10.0)
+
+    scale_x = slide_width_in / (page_width / 72.0)
+    scale_y = slide_height_in / (page_height / 72.0)
+
+    left = Inches((left_pt / 72.0) * scale_x)
+    top = Inches((top_pt / 72.0) * scale_y)
+    width = Inches(max(((right_pt - left_pt) / 72.0) * scale_x, font_size_pt / 72.0 * scale_x * 0.6))
+    height = Inches(max(((bottom_pt - top_pt) / 72.0) * scale_y, (font_size_pt / 72.0) * scale_y * 1.3))
+
+    textbox = slide.shapes.add_textbox(left, top, width, height)
+    text_frame = textbox.text_frame
+    text_frame.clear()
+    text_frame.word_wrap = False
+    text_frame.margin_left = Pt(0)
+    text_frame.margin_right = Pt(0)
+    text_frame.margin_top = Pt(0)
+    text_frame.margin_bottom = Pt(0)
+
+    paragraph = text_frame.paragraphs[0]
+    run = paragraph.add_run()
+    run.text = text
+    run.font.size = Pt(font_size_pt)
+
+    font_names = [str(char.get("fontname")) for char in ordered_chars if char.get("fontname")]
+    if font_names:
+        run.font.name = Counter(font_names).most_common(1)[0][0]
+
+
 def convert_pdf_to_docx(pdf_path: str) -> bytes:
     with tempfile.TemporaryDirectory() as temp_dir:
         output_path = os.path.join(temp_dir, "converted.docx")
@@ -141,28 +216,35 @@ def convert_pdf_to_xlsx(pdf_path: str) -> bytes:
 
 
 def convert_pdf_to_pptx(pdf_path: str) -> bytes:
-    presentation = Presentation()
+    with pdfplumber.open(pdf_path) as pdf:
+        pages = pdf.pages
+        if not pages:
+            raise ValueError("PDFからスライドを生成できませんでした。")
 
-    images = convert_from_path(pdf_path, dpi=300)
-    if not images:
-        raise ValueError("PDFからスライドを生成できませんでした。")
+        max_page_width = max(float(page.width) for page in pages)
+        max_page_height = max(float(page.height) for page in pages)
 
-    first_image = images[0]
-    image_dpi = 300
-    presentation.slide_width = Inches(first_image.width / image_dpi)
-    presentation.slide_height = Inches(first_image.height / image_dpi)
+        presentation = Presentation()
+        presentation.slide_width = Inches(max_page_width / 72.0)
+        presentation.slide_height = Inches(max_page_height / 72.0)
 
-    slide_width = presentation.slide_width
-    slide_height = presentation.slide_height
-    blank_layout = presentation.slide_layouts[6]
+        slide_width_in = max_page_width / 72.0
+        slide_height_in = max_page_height / 72.0
+        blank_layout = presentation.slide_layouts[6]
 
-    for image in images:
-        slide = presentation.slides.add_slide(blank_layout)
+        for page in pages:
+            slide = presentation.slides.add_slide(blank_layout)
+            chars = page.chars or []
 
-        image_buffer = io.BytesIO()
-        image.save(image_buffer, format="PNG")
-        image_buffer.seek(0)
-        slide.shapes.add_picture(image_buffer, 0, 0, width=slide_width, height=slide_height)
+            for line_chars in group_pdf_chars_into_lines(chars):
+                create_textbox_for_line(
+                    slide,
+                    line_chars,
+                    page_width=float(page.width),
+                    page_height=float(page.height),
+                    slide_width_in=slide_width_in,
+                    slide_height_in=slide_height_in,
+                )
 
     output_buffer = io.BytesIO()
     presentation.save(output_buffer)

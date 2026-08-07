@@ -12,6 +12,7 @@ import streamlit as st
 from pdf2docx import Converter
 from pdf2image import convert_from_path
 from pptx import Presentation
+from pptx.util import Inches
 
 
 OUTPUT_FORMATS = {
@@ -141,36 +142,27 @@ def convert_pdf_to_xlsx(pdf_path: str) -> bytes:
 
 def convert_pdf_to_pptx(pdf_path: str) -> bytes:
     presentation = Presentation()
-    slide_width = presentation.slide_width
-    slide_height = presentation.slide_height
 
-    images = convert_from_path(pdf_path, dpi=160)
+    images = convert_from_path(pdf_path, dpi=300)
     if not images:
         raise ValueError("PDFからスライドを生成できませんでした。")
 
+    first_image = images[0]
+    image_dpi = 300
+    presentation.slide_width = Inches(first_image.width / image_dpi)
+    presentation.slide_height = Inches(first_image.height / image_dpi)
+
+    slide_width = presentation.slide_width
+    slide_height = presentation.slide_height
     blank_layout = presentation.slide_layouts[6]
 
     for image in images:
         slide = presentation.slides.add_slide(blank_layout)
 
-        image_width, image_height = image.size
-        slide_ratio = slide_width / slide_height
-        image_ratio = image_width / image_height
-
-        if image_ratio > slide_ratio:
-            picture_width = slide_width
-            picture_height = slide_width / image_ratio
-        else:
-            picture_height = slide_height
-            picture_width = slide_height * image_ratio
-
-        left = (slide_width - picture_width) / 2
-        top = (slide_height - picture_height) / 2
-
         image_buffer = io.BytesIO()
         image.save(image_buffer, format="PNG")
         image_buffer.seek(0)
-        slide.shapes.add_picture(image_buffer, left, top, width=picture_width, height=picture_height)
+        slide.shapes.add_picture(image_buffer, 0, 0, width=slide_width, height=slide_height)
 
     output_buffer = io.BytesIO()
     presentation.save(output_buffer)

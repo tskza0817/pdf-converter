@@ -1,5 +1,6 @@
 streamlit
 pdfservices-sdk
+pdf2docx
 pdfplumber
 openpyxl
 pandas

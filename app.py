@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import tempfile
 from pathlib import Path
 
 import pdfplumber
@@ -13,10 +14,10 @@ from adobe.pdfservices.operation.io.stream_asset import StreamAsset
 from adobe.pdfservices.operation.pdf_services import PDFServices
 from adobe.pdfservices.operation.pdf_services_media_type import PDFServicesMediaType
 from adobe.pdfservices.operation.pdfjobs.jobs.export_pdf_job import ExportPDFJob
-from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_ocr_locale import ExportOCRLocale
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_params import ExportPDFParams
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_target_format import ExportPDFTargetFormat
 from adobe.pdfservices.operation.pdfjobs.result.export_pdf_result import ExportPDFResult
+from pdf2docx import Converter
 from openpyxl import Workbook
 
 
@@ -203,6 +204,21 @@ def convert_pdf_to_xlsx(uploaded_pdf: bytes) -> bytes:
     return output.read()
 
 
+def convert_pdf_to_docx(uploaded_pdf: bytes) -> bytes:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pdf_path = Path(temp_dir) / "input.pdf"
+        output_path = Path(temp_dir) / "output.docx"
+        pdf_path.write_bytes(uploaded_pdf)
+
+        converter = Converter(str(pdf_path))
+        try:
+            converter.convert(str(output_path), start=0, end=None)
+        finally:
+            converter.close()
+
+        return output_path.read_bytes()
+
+
 def create_pdf_services(client_id: str, client_secret: str) -> PDFServices:
     credentials = ServicePrincipalCredentials(client_id=client_id, client_secret=client_secret)
     return PDFServices(credentials=credentials)
@@ -212,11 +228,7 @@ def export_pdf_with_adobe(uploaded_pdf: bytes, output_label: str, client_id: str
     pdf_services = create_pdf_services(client_id, client_secret)
     input_asset = pdf_services.upload(input_stream=uploaded_pdf, mime_type=PDFServicesMediaType.PDF)
 
-    export_params_kwargs = {"target_format": OUTPUT_FORMATS[output_label]["target_format"]}
-    if output_label == "Word (.docx)":
-        export_params_kwargs["ocr_lang"] = ExportOCRLocale.EN_US
-
-    export_pdf_params = ExportPDFParams(**export_params_kwargs)
+    export_pdf_params = ExportPDFParams(target_format=OUTPUT_FORMATS[output_label]["target_format"])
     export_pdf_job = ExportPDFJob(input_asset=input_asset, export_pdf_params=export_pdf_params)
 
     location = pdf_services.submit(export_pdf_job)
@@ -227,7 +239,9 @@ def export_pdf_with_adobe(uploaded_pdf: bytes, output_label: str, client_id: str
 
 
 def run_conversion(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile, output_label: str, client_id: str, client_secret: str) -> tuple[bytes, str, str]:
-    if output_label == "Excel (.xlsx)":
+    if output_label == "Word (.docx)":
+        output_bytes = convert_pdf_to_docx(uploaded_file.getvalue())
+    elif output_label == "Excel (.xlsx)":
         output_bytes = convert_pdf_to_xlsx(uploaded_file.getvalue())
     else:
         output_bytes = export_pdf_with_adobe(uploaded_file.getvalue(), output_label, client_id, client_secret)
@@ -245,7 +259,7 @@ def main() -> None:
         """
         <div class="hero">
             <h1>PDF 変換アプリ</h1>
-            <p>Adobe PDF Services API を使って、PDF を Word / Excel / PowerPoint の編集可能形式へ変換します。</p>
+            <p>PDF を Word / Excel / PowerPoint の編集可能形式へ変換します。</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -255,7 +269,7 @@ def main() -> None:
     output_label = st.selectbox("変換先の形式", list(OUTPUT_FORMATS.keys()))
 
     credentials_ready = bool(client_id and client_secret)
-    adobe_required = output_label != "Excel (.xlsx)"
+    adobe_required = output_label == "PowerPoint (.pptx)"
     if adobe_required and not credentials_ready:
         st.warning("管理者にお問い合わせください（Secrets未設定）")
 
@@ -267,7 +281,7 @@ def main() -> None:
 
     if convert_clicked and uploaded_file is not None and (credentials_ready or not adobe_required):
         try:
-            with st.spinner("Adobe のエンジンで変換中です。ページ数やPDFの内容によって時間がかかる場合があります。"):
+            with st.spinner("変換中です。ファイルサイズや内容によって時間がかかる場合があります。"):
                 output_bytes, output_name, mime_type = run_conversion(uploaded_file, output_label, client_id, client_secret)
 
             st.session_state["converted_file"] = {

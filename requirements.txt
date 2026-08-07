@@ -1,2 +1,5 @@
 streamlit
 pdfservices-sdk
+pdfplumber
+openpyxl
+pandas

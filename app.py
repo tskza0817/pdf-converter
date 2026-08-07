@@ -83,32 +83,10 @@ def read_config_value(key: str) -> str:
     return str(secret_value)
 
 
-def render_sidebar_credentials() -> tuple[str, str]:
-    st.sidebar.header("Adobe PDF Services")
-    st.sidebar.caption("Secrets / 環境変数を優先し、未設定時のみ下の入力欄で上書きできます。")
-
-    default_client_id = read_config_value("PDF_SERVICES_CLIENT_ID")
-    default_client_secret = read_config_value("PDF_SERVICES_CLIENT_SECRET")
-
-    client_id = st.sidebar.text_input(
-        "PDF_SERVICES_CLIENT_ID",
-        value=default_client_id,
-        type="password",
-        help="Streamlit Secrets または環境変数から自動取得されます。",
-    )
-    client_secret = st.sidebar.text_input(
-        "PDF_SERVICES_CLIENT_SECRET",
-        value=default_client_secret,
-        type="password",
-        help="Streamlit Secrets または環境変数から自動取得されます。",
-    )
-
-    if client_id and client_secret:
-        st.sidebar.success("認証情報が準備できています。")
-    else:
-        st.sidebar.warning("認証情報を設定してください。")
-
-    return client_id.strip(), client_secret.strip()
+def load_credentials() -> tuple[str, str]:
+    client_id = read_config_value("PDF_SERVICES_CLIENT_ID").strip()
+    client_secret = read_config_value("PDF_SERVICES_CLIENT_SECRET").strip()
+    return client_id, client_secret
 
 
 def create_pdf_services(client_id: str, client_secret: str) -> PDFServices:
@@ -139,7 +117,7 @@ def run_conversion(uploaded_file: st.runtime.uploaded_file_manager.UploadedFile,
 
 def main() -> None:
     set_page_style()
-    client_id, client_secret = render_sidebar_credentials()
+    client_id, client_secret = load_credentials()
 
     st.markdown(
         """
@@ -155,6 +133,9 @@ def main() -> None:
     output_label = st.selectbox("変換先の形式", list(OUTPUT_FORMATS.keys()))
 
     credentials_ready = bool(client_id and client_secret)
+    if not credentials_ready:
+        st.warning("管理者にお問い合わせください（Secrets未設定）")
+
     convert_clicked = st.button("変換開始", use_container_width=True, disabled=uploaded_file is None or not credentials_ready)
 
     if convert_clicked and uploaded_file is not None and credentials_ready:

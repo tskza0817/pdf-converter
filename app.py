@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import io
 import os
-import tempfile
 from pathlib import Path
 
 import pdfplumber
+import pytesseract
 import streamlit as st
 from adobe.pdfservices.operation.auth.service_principal_credentials import ServicePrincipalCredentials
 from adobe.pdfservices.operation.exception.exceptions import ServiceApiException, ServiceUsageException, SdkException
@@ -17,8 +17,12 @@ from adobe.pdfservices.operation.pdfjobs.jobs.export_pdf_job import ExportPDFJob
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_params import ExportPDFParams
 from adobe.pdfservices.operation.pdfjobs.params.export_pdf.export_pdf_target_format import ExportPDFTargetFormat
 from adobe.pdfservices.operation.pdfjobs.result.export_pdf_result import ExportPDFResult
-from pdf2docx import Converter
+from docx import Document
+from docx.shared import Inches, Pt
 from openpyxl import Workbook
+from pdf2image import convert_from_bytes
+from PIL import Image
+from pytesseract import Output
 
 
 OUTPUT_FORMATS = {
@@ -204,19 +208,112 @@ def convert_pdf_to_xlsx(uploaded_pdf: bytes) -> bytes:
     return output.read()
 
 
-def convert_pdf_to_docx(uploaded_pdf: bytes) -> bytes:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        pdf_path = Path(temp_dir) / "input.pdf"
-        output_path = Path(temp_dir) / "output.docx"
-        pdf_path.write_bytes(uploaded_pdf)
+def extract_ocr_lines(image: Image.Image) -> list[dict[str, float | str]]:
+    ocr_data = pytesseract.image_to_data(
+        image,
+        lang="jpn+eng",
+        config="--oem 3 --psm 6",
+        output_type=Output.DICT,
+    )
 
-        converter = Converter(str(pdf_path))
+    grouped_lines: dict[tuple[int, int, int], list[dict[str, float | str]]] = {}
+    item_count = len(ocr_data.get("text", []))
+
+    for index in range(item_count):
+        text = str(ocr_data["text"][index]).strip()
+        confidence_text = str(ocr_data["conf"][index]).strip()
+        if not text:
+            continue
+
         try:
-            converter.convert(str(output_path), start=0, end=None)
-        finally:
-            converter.close()
+            confidence = float(confidence_text)
+        except ValueError:
+            confidence = -1.0
 
-        return output_path.read_bytes()
+        if confidence < 0:
+            continue
+
+        key = (
+            int(ocr_data["block_num"][index]),
+            int(ocr_data["par_num"][index]),
+            int(ocr_data["line_num"][index]),
+        )
+        grouped_lines.setdefault(key, []).append(
+            {
+                "text": text,
+                "left": float(ocr_data["left"][index]),
+                "top": float(ocr_data["top"][index]),
+                "width": float(ocr_data["width"][index]),
+                "height": float(ocr_data["height"][index]),
+            }
+        )
+
+    merged_lines: list[dict[str, float | str]] = []
+    for line_items in grouped_lines.values():
+        ordered_items = sorted(line_items, key=lambda item: float(item["left"]))
+        text = " ".join(str(item["text"]) for item in ordered_items).strip()
+        if not text:
+            continue
+
+        left = min(float(item["left"]) for item in ordered_items)
+        top = min(float(item["top"]) for item in ordered_items)
+        height = max(float(item["height"]) for item in ordered_items)
+        merged_lines.append(
+            {
+                "text": text,
+                "left": left,
+                "top": top,
+                "height": height,
+            }
+        )
+
+    return sorted(merged_lines, key=lambda item: (float(item["top"]), float(item["left"])))
+
+
+def append_ocr_page_to_doc(document: Document, page_image: Image.Image, dpi: int) -> None:
+    lines = extract_ocr_lines(page_image)
+
+    previous_bottom = 0.0
+    for line in lines:
+        top = float(line["top"])
+        height = float(line["height"])
+        left = float(line["left"])
+
+        paragraph = document.add_paragraph()
+        if previous_bottom > 0:
+            vertical_gap_px = max(top - previous_bottom, 0.0)
+            paragraph.paragraph_format.space_before = Pt((vertical_gap_px / dpi) * 72)
+
+        paragraph.paragraph_format.left_indent = Inches(left / dpi)
+        run = paragraph.add_run(str(line["text"]))
+        run.font.size = Pt(max((height / dpi) * 72 * 0.9, 9))
+
+        previous_bottom = top + height
+
+    if not lines:
+        document.add_paragraph("OCRで抽出できる文字が見つかりませんでした。")
+
+
+def convert_pdf_to_docx(uploaded_pdf: bytes) -> bytes:
+    dpi = 300
+    images = convert_from_bytes(uploaded_pdf, dpi=dpi)
+    document = Document()
+
+    section = document.sections[0]
+    section.top_margin = Inches(0.5)
+    section.bottom_margin = Inches(0.5)
+    section.left_margin = Inches(0.5)
+    section.right_margin = Inches(0.5)
+
+    for page_index, image in enumerate(images):
+        append_ocr_page_to_doc(document, image, dpi=dpi)
+        if page_index < len(images) - 1:
+            document.add_page_break()
+
+    output = io.BytesIO()
+    document.save(output)
+    output.seek(0)
+    return output.read()
 
 
 def create_pdf_services(client_id: str, client_secret: str) -> PDFServices:

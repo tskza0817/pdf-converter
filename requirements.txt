@@ -4,3 +4,7 @@ pdf2docx
 pdfplumber
 openpyxl
 pandas
+pytesseract
+pdf2image
+Pillow
+python-docx
